@@ -1,7 +1,7 @@
 # body.py
 
 # Initial body format
-body = "user=val&pass=val"
+body = "username=value&password=value"
 
 def get_body():
     # Convert the initial body format to a dictionary
